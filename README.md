@@ -1,6 +1,4 @@
-> NOTE: This helm chart is in code freeze i.e we will only update MinIO releases occastionally by bumping up the version. For latest features you are advised to start using our [MinIO operator](https://github.com/minio/operator).
-
-MinIO
+>MinIO
 =====
 
 [MinIO](https://min.io) is a High Performance Object Storage released under Apache License v2.0. It is API compatible with Amazon S3 cloud storage service. Use MinIO to build high performance infrastructure for machine learning, analytics and application data workloads.
@@ -66,31 +64,6 @@ To update your MinIO server configuration while it is deployed in a release, you
 
 You can also check the history of upgrades to a release using `helm history my-release`. Replace `my-release` with the actual release name.
 
-### Installing certificates from third party CAs
-
-MinIO can connect to other servers, including MinIO nodes or other server types such as NATs and Redis. If these servers use certificates that were not registered with a known CA, add trust for these certificates to MinIO Server by bundling these certificates into a Kubernetes secret and providing it to Helm via the `trustedCertsSecret` value. If `.Values.tls.enabled` is `true` and you're installing certificates for third party CAs, remember to include Minio's own certificate with key `public.crt`, if it also needs to be trusted.
-
-For instance, given that TLS is enabled and you need to add trust for Minio's own CA and for the CA of a Keycloak server, a Kubernetes secret can be created from the certificate files using `kubectl`:
-
-```
-kubectl -n minio create secret generic minio-trusted-certs --from-file=public.crt --from-file=keycloak.crt
-```
-
-If TLS is not enabled, you would need only the third party CA:
-
-```
-kubectl -n minio create secret generic minio-trusted-certs --from-file=keycloak.crt
-```
-
-The name of the generated secret can then be passed to Helm using a values file or the `--set` parameter:
-
-```
-trustedCertsSecret: "minio-trusted-certs"
-
-or
-
---set trustedCertsSecret=minio-trusted-certs
-```
 
 Uninstalling the Chart
 ----------------------
@@ -155,8 +128,6 @@ The following table lists the configurable parameters of the MinIO chart and the
 | `drivesPerNode`                                  | Number of drives per node (applicable only for MinIO distributed mode).                                                                 | `1`                              |
 | `existingSecret`                                 | Name of existing secret with access and secret key.                                                                                     | `""`                             |
 | `accessKey`                                      | Default access key (5 to 20 characters)                                                                                                 | random 20 chars                  |
-| `secretKey`                                      | Default secret key (8 to 40 characters)                                                                                                 | random 40 chars                  |
-| `certsPath`                                      | Default certs path location                                                                                                             | `/etc/minio/certs`               |
 | `configPathmc`                                   | Default config file location for MinIO client - mc                                                                                      | `/etc/minio/mc`                  |
 | `mountPath`                                      | Default mount location for persistent drive                                                                                             | `/export`                        |
 | `bucketRoot`                                     | Directory from where minio should serve buckets.                                                                                        | Value of `.mountPath`            |
@@ -231,28 +202,52 @@ The following table lists the configurable parameters of the MinIO chart and the
 | `etcd.clientCert`                                | Certificate used for SSL/TLS connections to etcd [(etcd Security)](https://etcd.io/docs/latest/op-guide/security/)                      | `""`                             |
 | `etcd.clientCertKey`                             | Key for the certificate [(etcd Security)](https://etcd.io/docs/latest/op-guide/security/)                                               | `""`                             |
 
-Some of the parameters above map to the env variables defined in the [MinIO DockerHub image](https://hub.docker.com/r/minio/minio/).
-
-You can specify each parameter using the `--set key=value[,key=value]` argument to `helm install`. For example,
-
-```bash
-$ helm install --name my-release --set persistence.size=1Ti minio/minio
-```
-
-The above command deploys MinIO server with a 1Ti backing persistent volume.
-
-Alternately, you can provide a YAML file that specifies parameter values while installing the chart. For example,
-
-```bash
-$ helm install --name my-release -f values.yaml minio/minio
-```
-
-> **Tip**: You can use the default [values.yaml](minio/values.yaml)
 
 Distributed MinIO
 -----------
 
 This chart provisions a MinIO server in standalone mode, by default. To provision MinIO server in [distributed mode](https://docs.minio.io/docs/distributed-minio-quickstart-guide), set the `mode` field to `distributed`,
+
+Distributed MinIO setup with m servers and n disks will have your data safe as long as m/2 servers or m*n/2 or more disks are online.
+
+For example, an 16-server distributed setup with 200 disks per node would continue serving files, up to 4 servers can be offline in default configuration i.e around 800 disks down MinIO would continue to read and write objects.
+
+
+# Number of drives attached to a node
+drivesPerNode: 1
+# Number of MinIO containers running
+replicas: 8
+# Number of expanded MinIO clusters
+zones: 2
+
+The selection of varying data and parity drives has a direct impact on the drive space usage. With storage class, you can optimize for high redundancy or better drive space utilization.
+
+To get an idea of how various combinations of data and parity drives affect the storage usage, let’s take an example of a 100 MiB file stored on 16 drive MinIO deployment. If you use eight data and eight parity drives, the file space usage will be approximately twice, i.e. 100 MiB file will take 200 MiB space. But, if you use ten data and six parity drives, same 100 MiB file takes around 160 MiB. If you use 14 data and two parity drives, 100 MiB file takes only approximately 114 MiB.
+
+Below is a list of data/parity drives and corresponding approximate storage space usage on a 16 drive MinIO deployment. The field storage usage ratio is simply the drive space used by the file after erasure-encoding, divided by actual file size.
+
+
+Total Drives (N)	Data Drives (D)	Parity Drives (P)	Storage Usage Ratio
+16              	8	            8	                2.00
+16	                9	            7	                1.79
+16                	10	            6	                1.60
+16	                11	            5	                1.45
+16	                12	            4	                1.34
+16	                13	            3	                1.23
+16	                14            	2	                1.14
+
+You can calculate approximate storage usage ratio using the formula - total drives (N) / data drives (D).
+
+Allowed values for REDUCED_REDUNDANCY storage class
+REDUCED_REDUNDANCY implies lesser parity than STANDARD class. So,REDUCED_REDUNDANCY parity disks should be
+
+    *Less than N/2, if STANDARD parity is not set.
+    *Less than STANDARD Parity, if it is set.
+As parity below 2 is not recommended, REDUCED_REDUNDANCY storage class is not supported for 4 disks erasure coding setup.
+
+Default value for REDUCED_REDUNDANCY storage class is 2.
+
+Helm install distribute mode
 
 ```bash
 $ helm install --set mode=distributed minio/minio
@@ -277,30 +272,6 @@ $ helm install --set mode=distributed,replicas=8,zones=2 minio/minio
 1. StatefulSets need persistent storage, so the `persistence.enabled` flag is ignored when `mode` is set to `distributed`.
 2. When uninstalling a distributed MinIO release, you'll need to manually delete volumes associated with the StatefulSet.
 
-NAS Gateway
------------
-
-### Prerequisites
-
-MinIO in [NAS gateway mode](https://docs.minio.io/docs/minio-gateway-for-nas) can be used to create multiple MinIO instances backed by single PV in `ReadWriteMany` mode. Currently few [Kubernetes volume plugins](https://kubernetes.io/docs/user-guide/persistent-volumes/#access-modes) support `ReadWriteMany` mode. To deploy MinIO NAS gateway with Helm chart you'll need to have a Persistent Volume running with one of the supported volume plugins. [This document](https://kubernetes.io/docs/user-guide/volumes/#nfs)
-outlines steps to create a NFS PV in Kubernetes cluster.
-
-### Provision NAS Gateway MinIO instances
-
-To provision MinIO servers in [NAS gateway mode](https://docs.minio.io/docs/minio-gateway-for-nas), set the `nasgateway.enabled` field to `true`,
-
-```bash
-$ helm install --set nasgateway.enabled=true minio/minio
-```
-
-This provisions 4 MinIO NAS gateway instances backed by single storage. To change the number of instances in your MinIO deployment, set the `replicas` field,
-
-```bash
-$ helm install --set nasgateway.enabled=true,nasgateway.replicas=8 minio/minio
-```
-
-This provisions MinIO NAS gateway with 8 instances.
-
 Persistence
 -----------
 
@@ -324,25 +295,6 @@ If a Persistent Volume Claim already exists, specify it during installation.
 ```bash
 $ helm install --set persistence.existingClaim=PVC_NAME minio/minio
 ```
-
-NetworkPolicy
--------------
-
-To enable network policy for MinIO,
-install [a networking plugin that implements the Kubernetes
-NetworkPolicy spec](https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy#before-you-begin),
-and set `networkPolicy.enabled` to `true`.
-
-For Kubernetes v1.5 & v1.6, you must also turn on NetworkPolicy by setting
-the DefaultDeny namespace annotation. Note: this will enforce policy for _all_ pods in the namespace:
-
-    kubectl annotate namespace default "net.beta.kubernetes.io/network-policy={\"ingress\":{\"isolation\":\"DefaultDeny\"}}"
-
-With NetworkPolicy enabled, traffic will be limited to just port 9000.
-
-For more precise policy, set `networkPolicy.allowExternal=true`. This will
-only allow pods with the generated client label to connect to MinIO.
-This label will be displayed in the output of a successful install.
 
 Existing secret
 ---------------
@@ -374,31 +326,6 @@ The following fields are expected in the secret:
 
 All corresponding variables will be ignored in values file.
 
-Configure TLS
--------------
-
-To enable TLS for MinIO containers, acquire TLS certificates from a CA or create self-signed certificates. While creating / acquiring certificates ensure the corresponding domain names are set as per the standard [DNS naming conventions](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#pod-identity) in a Kubernetes StatefulSet (for a distributed MinIO setup). Then create a secret using
-
-```bash
-$ kubectl create secret generic tls-ssl-minio --from-file=path/to/private.key --from-file=path/to/public.crt
-```
-
-Then install the chart, specifying that you want to use the TLS secret:
-
-```bash
-$ helm install --set tls.enabled=true,tls.certSecret=tls-ssl-minio minio/minio
-```
-
-Pass environment variables to MinIO containers
-----------------------------------------------
-
-To pass environment variables to MinIO containers when deploying via Helm chart, use the below command line format
-
-```bash
-$ helm install --set environment.MINIO_BROWSER=on,environment.MINIO_DOMAIN=domain-name minio/minio
-```
-
-You can add as many environment variables as required, using the above format. Just add `environment.<VARIABLE_NAME>=<value>` under `set` flag.
 
 Create buckets after install
 ---------------------------
